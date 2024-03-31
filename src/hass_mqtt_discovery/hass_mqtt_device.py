@@ -1,11 +1,13 @@
 import json
 import logging
 import os
+from typing import Optional
 
 import paho.mqtt.client as mqtt
 import yaml
 
 DISCOVERY_PREFIX = "homeassistant"
+EXPORT_PREFIX = "homeassistant"
 
 logger = logging.getLogger(__name__)
 if "DEBUG" in os.environ:
@@ -62,7 +64,7 @@ class Sensor(Component):
         self.unit_of_measurement = unit_of_measurement
         self.icon = icon
         self.topic_parent_level = topic_parent_level
-        self.topic = f"{self.parent_device.name}/{self.component}/{self.topic_parent_level}/{self.object_id}"
+        self.topic = f"{EXPORT_PREFIX}/{self.parent_device.name}/{self.component}/{self.topic_parent_level}/{self.object_id}"
         self._send_config()
 
     def _send_config(self):
@@ -70,9 +72,11 @@ class Sensor(Component):
             "~": self.topic,
             "name": self.name,
             "state_topic": "~/state",
-            "unit_of_measurement": self.unit_of_measurement,
+            "unit_of_measurement": self.unit_of_measurement, #NI in DCZ?
+            "temp_unit": self.unit_of_measurement,
             "device": self.parent_device,
-            "force_update": self.force_update
+            "force_update": self.force_update,
+            "unique_id": self.parent_device["identifiers"][0] + "_" + self.object_id,
         }
 
         if self.icon:
@@ -151,3 +155,85 @@ class Binary:
 
     def send(self, value):
         self.client.publish(f"{self.topic}/state", str(value))
+
+class Climate(Component):
+    def __init__(
+            self,
+            name,
+            client: mqtt.Client,
+            parent_device,
+            topic_parent_level="",
+            object_id = None,
+            
+            unit_of_measurement=None,
+            icon=None,
+            force_update=False
+    ):
+        super().__init__("climate")
+        
+        self.client = client
+        self.name = name
+        self.object_id = object_id if object_id is not None else self.name.replace(" ", "_").lower()
+        self.parent_device = parent_device
+        
+        self.force_update = force_update
+        self.unit_of_measurement = unit_of_measurement
+        self.icon = icon
+        self.topic_parent_level = topic_parent_level
+        self.topic = f"{EXPORT_PREFIX}/{self.parent_device.name}/{self.component}/{self.topic_parent_level}/{self.object_id}"
+        self._send_config()
+
+    def _send_config(self):
+        _config = {
+            "~": self.topic,
+            "name": self.name,
+            #"state_topic": "~/state",
+            #"unit_of_measurement": self.unit_of_measurement, #NI in DCZ?
+            
+            "device": self.parent_device,
+            "force_update": self.force_update,
+
+            "unique_id": self.parent_device["identifiers"][0] + "_" + self.object_id,
+            "device_class": "hvac", # illuminance / *humidity*
+            "stat_t": "~/state",
+            "dev": self.parent_device,
+            #actuator temp:
+            'temperature_state_topic': '~/temp',
+            "temp_unit": self.unit_of_measurement,
+            'temperature_command_topic': '~/set/temp',
+            #'temperature_state_template': '{{ value_json.temperature }}',
+            
+            'current_temperature_topic': '~/curr_temp',
+            
+            "modes": [ "off" , "auto", "heat", "dry", "fan_only", "cool" ],
+            'mode_state_topic': '~/mode',
+            'mode_command_topic': '~/set/mode',
+            #'preset_mode_command_template': '{{ value_json.preset_mode }}',
+            
+            "preset_modes": [ "off", "Cool", "ecoCool", "turboCool", "Heating" ],
+            'preset_mode_value_template': '{{ value_json.ABCD }}',
+            'preset_mode_state_topic': '~/preset',
+            'preset_mode_command_topic': '~/set/preset',
+            #'preset_mode_command_template': '{{ value_json.id }}', Not used in DCZ, (reading is here)
+            
+            
+        }
+
+        if self.icon:
+            _config["icon"] = self.icon
+
+        topic = f"{DISCOVERY_PREFIX}/{self.component}/{self.parent_device.name}/{self.object_id}/config"
+        self.client.publish(topic, json.dumps(_config), retain=True).wait_for_publish()
+
+    def send(self, 
+             currentTargetTemp: Optional[float],  
+             currentTempIn: Optional[float],
+             blocking=False
+             ):
+        message_info = self.client.publish(f"{self.topic}/temp", currentTargetTemp)
+        message_info = self.client.publish(f"{self.topic}/curr_temp", currentTempIn)
+        message_info = self.client.publish(f"{self.topic}/mode", "cool")
+        message_info = self.client.publish(f"{self.topic}/preset", "Cooling Turbo")
+
+        if blocking:
+            message_info.wait_for_publish()
